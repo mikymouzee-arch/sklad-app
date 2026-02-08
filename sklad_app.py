@@ -34,12 +34,16 @@ st.markdown("""
 @st.cache_resource
 def connect_db():
     try:
-        # Tady je ta změna: Načítáme z 'secrets' místo ze souboru
-        creds_dict = st.secrets["gcp_service_account"]
-        gc = gspread.service_account_from_dict(creds_dict)
-        return gc.open("Sklad_DB")
+        # TENTO ŘÁDEK NESMÍ MÍT ŽÁDNOU MEZERU NA ZAČÁTKU (před "if")
+            if "gcp_service_account" in st.secrets:
+            creds_dict = st.secrets["gcp_service_account"]
+            gc = gspread.service_account_from_dict(creds_dict)
+            return gc.open("Sklad_DB")
+        else:
+            st.error("❌ Chybí nastavení Secrets!")
+            return None
     except Exception as e:
-        st.error(f"Chyba připojení: {e}")
+        st.error(f"❌ Chyba připojení: {e}")
         return None
 
 sh = connect_db()
@@ -250,3 +254,4 @@ else:
         with tt[4]:
 
             st.dataframe(df_p[(df_p['uzivatel_id']==my_id)|(df_p['prijemce_id']==my_id)].iloc[::-1], use_container_width=True, hide_index=True)
+
