@@ -1,3 +1,4 @@
-gspread
+streamlit==1.41.0
+altair==5.2.0
 pandas
-streamlit
+gspread
