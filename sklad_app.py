@@ -1,19 +1,13 @@
-# Tady je ta změna: Načítáme z 'secrets' místo ze souboru
-        creds_dict = st.secrets["gcp_service_account"]
-        gc = gspread.service_account_from_dict(creds_dict)
-        return gc.open("Sklad_DB")
-    except Exception as e:
-        st.error(f"Chyba připojení: {e}")
-        return Noneimport streamlit as st
+import streamlit as st
 import gspread
 import pandas as pd
 from datetime import datetime
-import time
 
 # --- 1. KONFIGURACE A STYL ---
 st.set_page_config(page_title="STARNET Sklad v137", layout="wide")
 LOGO_URL = "https://www.starnet.cz/_app/immutable/assets/logo-full.BuKwkfDc.svg"
 
+# Inicializace session state
 if 'logged_in' not in st.session_state:
     st.session_state.update({
         'logged_in': False, 'user_id': "", 'role': "", 
@@ -34,18 +28,17 @@ st.markdown("""
 @st.cache_resource
 def connect_db():
     try:
-        # TENTO ŘÁDEK NESMÍ MÍT ŽÁDNOU MEZERU NA ZAČÁTKU (před "if")
-            if "gcp_service_account" in st.secrets:
-            creds_dict = st.secrets["gcp_service_account"]
+        # Načítáme klíče z nastavení Streamlitu (Secrets)
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
             gc = gspread.service_account_from_dict(creds_dict)
             return gc.open("Sklad_DB")
         else:
-            st.error("❌ Chybí nastavení Secrets!")
             return None
     except Exception as e:
-        st.error(f"❌ Chyba připojení: {e}")
         return None
 
+# Pokus o připojení
 sh = connect_db()
 
 def get_data(sheet_name):
@@ -73,7 +66,8 @@ def get_balance(df_p, df_m, entity_id):
     e_id = str(entity_id).strip()
     res = []
     for _, row in df_m.iterrows():
-        p_id, p_rows = str(row['id']), df_p[df_p['produkt_id'] == str(row['id'])]
+        p_id = str(row['id'])
+        p_rows = df_p[df_p['produkt_id'] == p_id]
         if e_id == "Sklad":
             v_in = sum(pd.to_numeric(p_rows[(p_rows['prijemce_id'] == e_id) & (p_rows['typ'] != 'vratka_zadost')]['mnozstvi'], errors='coerce').fillna(0))
             v_out = sum(pd.to_numeric(p_rows[p_rows['uzivatel_id'] == e_id]['mnozstvi'], errors='coerce').fillna(0))
@@ -96,30 +90,46 @@ def style_low_stock(row):
 
 # --- 3. ROZHRANÍ ---
 
-if not st.session_state.logged_in:
+if not sh:
+    st.error("❌ Aplikace se nemůže připojit k databázi. Zkontroluj 'Secrets' v nastavení Streamlitu.")
+elif not st.session_state.logged_in:
     _, col_mid, _ = st.columns([1, 1.2, 1])
     with col_mid:
         st.image(LOGO_URL, use_container_width=True)
         with st.form("login"):
-            l_in, p_in = st.text_input("Login").strip(), st.text_input("Heslo", type="password").strip()
+            l_in = st.text_input("Login").strip()
+            p_in = st.text_input("Heslo", type="password").strip()
             if st.form_submit_button("VSTOUPIT"):
                 u_df = get_data("Uzivatele")
                 match = u_df[(u_df['uzivatel'] == l_in) & (u_df['heslo'] == p_in)]
                 if not match.empty:
                     r = match.iloc[0]
-                    st.session_state.update({'logged_in': True, 'user_id': str(r['id']), 'role': str(r['role']).lower().strip(), 'full_name': f"{r['jmeno']} {r['prijmeni']}"})
+                    st.session_state.update({
+                        'logged_in': True, 
+                        'user_id': str(r['id']), 
+                        'role': str(r['role']).lower().strip(), 
+                        'full_name': f"{r['jmeno']} {r['prijmeni']}"
+                    })
                     st.rerun()
                 st.error("❌ Neplatné údaje.")
 else:
+    # HORNÍ LIŠTA
     c1, c2, c3 = st.columns([2, 4, 1])
     with c1: st.image(LOGO_URL, width=165)
     with c2: st.info(f"👤 **{st.session_state.full_name}** | ROLE: **{st.session_state.role.upper()}**")
-    if c3.button("Odhlásit"): st.session_state.logged_in = False; st.rerun()
+    if c3.button("Odhlásit"):
+        st.session_state.logged_in = False
+        st.rerun()
 
-    df_p, df_u, df_m, df_o = get_data("Pohyby"), get_data("Uzivatele"), get_data("Produkty"), get_data("Objednavky")
+    # NAČTENÍ DAT PRO CELOU APP
+    df_p = get_data("Pohyby")
+    df_u = get_data("Uzivatele")
+    df_m = get_data("Produkty")
+    df_o = get_data("Objednavky")
     my_id = str(st.session_state.user_id)
     next_id = max(pd.to_numeric(df_m['id'], errors='coerce').dropna().astype(int).tolist() or [5000]) + 1
 
+    # --- SEKCE SKLADNÍK ---
     if "skladnik" in st.session_state.role:
         t = st.tabs(["🛒 OBJEDNÁVKY", "📥 PŘÍJEM ZBOŽÍ", "📤 VÝDEJ", "📊 SKLAD", "👥 TECHNICI", "📦 PRODUKTY", "📜 LOG"])
         
@@ -136,8 +146,10 @@ else:
                 oq, os = st.number_input("Kusů", 1), st.selectbox("Dodavatel", ["Sklad Starnet", "Sklad externí"])
                 if st.form_submit_button("ULOŽIT"):
                     if o_mode == "Nový produkt do systému" and nn:
-                        sh.worksheet("Produkty").append_row([str(next_id), nn, nu, nm, nj, 0, ne]); final_pid = str(next_id)
-                    sh.worksheet("Objednavky").append_row([datetime.now().strftime("%Y-%m-%d"), final_pid, oq, os, my_id, "Objednáno", 0, ""]); st.rerun()
+                        sh.worksheet("Produkty").append_row([str(next_id), nn, nu, nm, nj, 0, ne])
+                        final_pid = str(next_id)
+                    sh.worksheet("Objednavky").append_row([datetime.now().strftime("%Y-%m-%d"), final_pid, oq, os, my_id, "Objednáno", 0, ""])
+                    st.rerun()
 
         with t[1]: # PŘÍJEM
             p_m = st.radio("Zdroj:", ["Z objednávky", "Přímý příjem (novinka)", "Vratky"], horizontal=True)
@@ -158,7 +170,8 @@ else:
                     with st.form("f_p_o"):
                         qq, pp = st.number_input("Počet", 1), st.number_input("Cena", 0.0)
                         if st.form_submit_button("POTVRDIT"):
-                            log_movement(oid, "prijem", qq, "ks", pp, "Sklad Starnet", "Sklad", "obj"); st.rerun()
+                            log_movement(oid, "prijem", qq, "ks", pp, "Sklad Starnet", "Sklad", "obj")
+                            st.rerun()
                 else: st.info("Žádné otevřené objednávky k vyřízení.")
             else:
                 with st.form("f_d_p"):
@@ -166,9 +179,11 @@ else:
                     nm, nj, nc = st.number_input("Min. stav", 0), st.selectbox("Jedn.", ["ks", "m"]), st.number_input("Cena", 0.0)
                     pq = st.number_input("Počet", 1)
                     if st.form_submit_button("ZAPSAT"):
-                        sh.worksheet("Produkty").append_row([str(next_id), nn, nu, nm, nj, nc, ne]); log_movement(str(next_id), "prijem", pq, nj, nc, "Sklad externí", "Sklad", "direct"); st.rerun()
+                        sh.worksheet("Produkty").append_row([str(next_id), nn, nu, nm, nj, nc, ne])
+                        log_movement(str(next_id), "prijem", pq, nj, nc, "Sklad externí", "Sklad", "direct")
+                        st.rerun()
 
-        with t[3]: # 📊 SKLAD
+        with t[3]: # 📊 SKLAD (Low Stock + Export)
             st.subheader("Aktuální stav skladu")
             wh_bal = get_balance(df_p, df_m, "Sklad")
             if not wh_bal.empty:
@@ -178,20 +193,19 @@ else:
 
         with t[2]: # VÝDEJ
             wh_bal = get_balance(df_p, df_m, "Sklad")
-            # Robustnější vyhledávání techniků i zde
             t_df = df_u[df_u['role'].str.lower().str.contains('technik', na=False)]
-            if not wh_bal[wh_bal['Stav']>0].empty and not t_df.empty:
+            if not wh_bal.empty and not wh_bal[wh_bal['Stav']>0].empty:
                 with st.form("f_sk_v"):
                     v_p = st.selectbox("Zboží", [f"{r['ID']} - {r['Produkt']} ({r['Stav']})" for _, r in wh_bal[wh_bal['Stav']>0].iterrows()])
                     v_q = st.number_input("Počet", 1)
                     t_m = {f"{r['jmeno']} {r['prijmeni']}": r['id'] for _, r in t_df.iterrows()}
                     v_t = st.selectbox("Technik", list(t_m.keys()))
                     if st.form_submit_button("VYDAT"):
-                        log_movement(v_p.split(" - ")[0], "vydej", v_q, "ks", 0, "Sklad", t_m[v_t], "výdej"); st.rerun()
+                        log_movement(v_p.split(" - ")[0], "vydej", v_q, "ks", 0, "Sklad", t_m[v_t], "výdej")
+                        st.rerun()
 
         with t[4]: # TECHNICI
             st.subheader("Mezisklady technických vozidel")
-            # Oprava filtru: Odstranění case-sensitivity a mezer
             t_list = df_u[df_u['role'].str.lower().str.contains('technik', na=False)]
             if not t_list.empty:
                 v_total = 0
@@ -203,7 +217,6 @@ else:
                 if sel_t != "-- Vyberte --":
                     tid = t_list[(t_list['jmeno'] + " " + t_list['prijmeni']) == sel_t]['id'].values[0]
                     st.dataframe(get_balance(df_p, df_m, tid), use_container_width=True, hide_index=True)
-            else: st.warning("V tabulce nebyli nalezeni žádní uživatelé s rolí Technik.")
 
         with t[5]: # PRODUKTY
             with st.expander("➕ NOVÝ PRODUKT"):
@@ -216,12 +229,13 @@ else:
 
         with t[6]: st.dataframe(df_p.iloc[::-1], use_container_width=True, hide_index=True)
 
+    # --- SEKCE TECHNIK ---
     elif "technik" in st.session_state.role:
         tt = st.tabs(["🚗 MOJE AUTO", "🛒 KOŠÍK", "⚡ SPOTŘEBA", "🔄 PŘESUN / SKLAD", "📜 LOG"])
         car = get_balance(df_p, df_m, my_id)
         wh = get_balance(df_p, df_m, "Sklad")
 
-        with tt[3]: # PŘESUN (NEDOTČENO)
+        with tt[3]: # PŘESUN
             others = df_u[(df_u['id'] != my_id) & (df_u['id'] != "")]
             o_map = {f"👤 Kolega: {r['jmeno']} {r['prijmeni']}": r['id'] for _, r in others.iterrows()}
             dest_options = ["Sklad"] + list(o_map.keys())
@@ -237,11 +251,12 @@ else:
 
         with tt[0]: st.dataframe(car[['ID', 'Produkt', 'Stav', 'Jednotka', 'URL']], use_container_width=True, hide_index=True, column_config={"URL": st.column_config.LinkColumn("Web")})
         with tt[1]:
-            avail = wh[wh['Stav']>0]
+            avail = wh[wh['Stav']>0] if not wh.empty else pd.DataFrame()
             if not avail.empty:
                 with st.form("f_t_c"):
                     l_p = st.selectbox("Zboží:", [f"{r['ID']} - {r['Produkt']} ({r['Stav']})" for _, r in avail.iterrows()])
-                    l_q = st.number_input("Beru si:", 1, int(avail[avail['ID']==l_p.split(" - ")[0]]['Stav'].iloc[0]))
+                    max_q = int(avail[avail['ID']==l_p.split(" - ")[0]]['Stav'].iloc[0])
+                    l_q = st.number_input("Beru si:", 1, max_q)
                     if st.form_submit_button("PŘIDAT"):
                         log_movement(l_p.split(" - ")[0], "vydej", l_q, "ks", 0, "Sklad", my_id, "samoobsluha"); st.rerun()
         with tt[2]:
@@ -252,6 +267,4 @@ else:
                     if st.form_submit_button("ODPSAT"):
                         log_movement(s_p.split(" - ")[0], "spotreba", s_q, "ks", 0, my_id, s_t, "montáž"); st.rerun()
         with tt[4]:
-
             st.dataframe(df_p[(df_p['uzivatel_id']==my_id)|(df_p['prijemce_id']==my_id)].iloc[::-1], use_container_width=True, hide_index=True)
-
