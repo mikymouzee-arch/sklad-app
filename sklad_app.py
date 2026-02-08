@@ -1,4 +1,10 @@
-import streamlit as st
+# Tady je ta změna: Načítáme z 'secrets' místo ze souboru
+        creds_dict = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(creds_dict)
+        return gc.open("Sklad_DB")
+    except Exception as e:
+        st.error(f"Chyba připojení: {e}")
+        return Noneimport streamlit as st
 import gspread
 import pandas as pd
 from datetime import datetime
@@ -28,9 +34,13 @@ st.markdown("""
 @st.cache_resource
 def connect_db():
     try:
-        gc = gspread.service_account(filename='creds.json')
+        # Tady je ta změna: Načítáme z 'secrets' místo ze souboru
+        creds_dict = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(creds_dict)
         return gc.open("Sklad_DB")
-    except: return None
+    except Exception as e:
+        st.error(f"Chyba připojení: {e}")
+        return None
 
 sh = connect_db()
 
@@ -238,4 +248,5 @@ else:
                     if st.form_submit_button("ODPSAT"):
                         log_movement(s_p.split(" - ")[0], "spotreba", s_q, "ks", 0, my_id, s_t, "montáž"); st.rerun()
         with tt[4]:
+
             st.dataframe(df_p[(df_p['uzivatel_id']==my_id)|(df_p['prijemce_id']==my_id)].iloc[::-1], use_container_width=True, hide_index=True)
